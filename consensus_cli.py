@@ -80,6 +80,14 @@ class PairConsensusResult:
 
 
 @dataclass
+class GroupConsensusResult:
+    group_name: str
+    genes: List[str]
+    aligned_rows: Dict[str, str]
+    consensus: str
+
+
+@dataclass
 class RunMetadata:
     input_path: str
     output_xlsx: str
@@ -96,6 +104,7 @@ class RunMetadata:
     git_remotes: str
     exon_reference_fasta: str
     compare_pairs: str
+    compare_groups: str
     family_mappings: str
 
 
@@ -990,6 +999,30 @@ def parse_compare_pairs(raw_pairs: Sequence[str]) -> List[Tuple[str, str]]:
     return pairs
 
 
+def parse_compare_groups(raw_groups: Sequence[str]) -> List[Tuple[str, List[str]]]:
+    groups: List[Tuple[str, List[str]]] = []
+    for raw in raw_groups:
+        txt = (raw or "").strip()
+        if not txt or "=" not in txt:
+            raise ValueError(f"Invalid --compare-group '{raw}'. Use NAME=GENE1,GENE2,...")
+        name, genes_txt = txt.split("=", 1)
+        name = name.strip()
+        genes = [g.strip() for g in genes_txt.split(",") if g.strip()]
+        if not name or len(genes) < 2:
+            raise ValueError(f"Invalid --compare-group '{raw}'. Use NAME=GENE1,GENE2,...")
+        groups.append((name, genes))
+    return groups
+
+
+def infer_auto_compare_groups(compare_pairs: Sequence[Tuple[str, str]]) -> List[Tuple[str, List[str]]]:
+    genes = {g for pair in compare_pairs for g in pair}
+    iglc = sorted([g for g in genes if re.match(r"^IGLC\d+$", g)], key=lambda x: int(re.sub(r"\D", "", x)))
+    out: List[Tuple[str, List[str]]] = []
+    if len(iglc) >= 3:
+        out.append(("IGLC_all", iglc))
+    return out
+
+
 def build_pair_consensus_char(a: str, b: str) -> Tuple[str, str]:
     if a == "-" or b == "-":
         return "x", "x"
@@ -1002,6 +1035,21 @@ def build_pair_consensus_char(a: str, b: str) -> Tuple[str, str]:
     if au != bu:
         return "N", "N"
     return a.lower(), "|"
+
+
+def build_group_consensus_char(chars: Sequence[str]) -> str:
+    if not chars:
+        return "x"
+    if any(ch == "-" for ch in chars):
+        return "x"
+    if any(ch == "X" for ch in chars):
+        return "X"
+    if any(ch == "x" for ch in chars):
+        return "x"
+    bases = [ch.upper() for ch in chars]
+    if all(b == bases[0] for b in bases):
+        return bases[0].lower()
+    return "N"
 
 
 def build_pair_consensus_results(
@@ -1035,6 +1083,35 @@ def build_pair_consensus_results(
     return out
 
 
+def build_group_consensus_results(
+    gene_summaries: List[GeneConsensusSummary],
+    compare_groups: Sequence[Tuple[str, List[str]]],
+) -> List[GroupConsensusResult]:
+    by_gene = {g.gene: g for g in gene_summaries}
+    out: List[GroupConsensusResult] = []
+    for group_name, genes in compare_groups:
+        available = [g for g in genes if g in by_gene]
+        if len(available) < 2:
+            continue
+        seqs = {g: by_gene[g].consensus for g in available}
+        aligned = build_alignment(seqs)
+        ordered = sorted(aligned.keys())
+        length = len(aligned[ordered[0]])
+        cons_chars: List[str] = []
+        for i in range(length):
+            col = [aligned[g][i] for g in ordered]
+            cons_chars.append(build_group_consensus_char(col))
+        out.append(
+            GroupConsensusResult(
+                group_name=group_name,
+                genes=ordered,
+                aligned_rows={g: aligned[g] for g in ordered},
+                consensus="".join(cons_chars),
+            )
+        )
+    return out
+
+
 def parse_family_mappings(family_args: Sequence[str]) -> Dict[str, set[str]]:
     # Default family mapping; can be extended/overridden by --family.
     mappings: Dict[str, set[str]] = {"EX2_family": {"EX2", "EX2R", "EX2T"}}
@@ -1057,6 +1134,7 @@ def build_effective_cli_call(
     output_fasta: Path,
     exon_reference_fasta: Optional[Path],
     compare_pairs: Sequence[Tuple[str, str]],
+    compare_groups: Sequence[Tuple[str, List[str]]],
     family_mappings: Dict[str, set[str]],
 ) -> str:
     parts: List[str] = [
@@ -1074,6 +1152,8 @@ def build_effective_cli_call(
         parts.extend(["--family", f"{fam}={','.join(sorted(members))}"])
     for a, b in compare_pairs:
         parts.extend(["--compare-pair", f"{a},{b}"])
+    for name, genes in compare_groups:
+        parts.extend(["--compare-group", f"{name}={','.join(genes)}"])
     return " ".join(shlex.quote(p) for p in parts)
 
 
@@ -1084,6 +1164,7 @@ def capture_run_metadata(
     exon_reference_fasta: Optional[Path],
     cli_call_effective: str,
     compare_pairs: Sequence[Tuple[str, str]],
+    compare_groups: Sequence[Tuple[str, List[str]]],
     family_mappings: Dict[str, set[str]],
 ) -> RunMetadata:
     def run_git(args: List[str]) -> str:
@@ -1115,6 +1196,7 @@ def capture_run_metadata(
         git_remotes=git_remotes.replace("\n", " ; "),
         exon_reference_fasta=str(exon_reference_fasta) if exon_reference_fasta else "",
         compare_pairs=";".join(f"{a},{b}" for a, b in compare_pairs),
+        compare_groups=";".join(f"{name}={','.join(genes)}" for name, genes in compare_groups),
         family_mappings=json.dumps({k: sorted(v) for k, v in sorted(family_mappings.items())}, sort_keys=True),
     )
 
@@ -1125,6 +1207,7 @@ def write_xlsx(
     annotations: Optional[List[JunctionAnnotation]] = None,
     family_mappings: Optional[Dict[str, set[str]]] = None,
     compare_pairs: Optional[List[Tuple[str, str]]] = None,
+    compare_groups: Optional[List[Tuple[str, List[str]]]] = None,
     run_metadata: Optional[RunMetadata] = None,
 ) -> None:
     try:
@@ -1140,6 +1223,7 @@ def write_xlsx(
 
     gene_summaries = build_gene_consensus_summaries(results, annotations=annotations, family_mappings=family_mappings)
     pair_results = build_pair_consensus_results(gene_summaries, compare_pairs or [])
+    group_results = build_group_consensus_results(gene_summaries, compare_groups or [])
 
     gsummary = wb.create_sheet(title=safe_sheet_name("gene_summary", used_names))
     gsummary.append(
@@ -1191,6 +1275,17 @@ def write_xlsx(
         pws.append(["legend", "|=match, N=explicit mismatch, X=ambiguous (input X), x=gap/padding"])
         pws.column_dimensions["A"].width = 24
         pws.column_dimensions["B"].width = 160
+
+    for gr in group_results:
+        gws = wb.create_sheet(title=safe_sheet_name(f"isotype_group_{gr.group_name}", used_names))
+        gws.append(["group", gr.group_name])
+        gws.append(["genes", ",".join(gr.genes)])
+        for gene in gr.genes:
+            gws.append([gene, gr.aligned_rows[gene]])
+        gws.append(["group_consensus_fasta", gr.consensus])
+        gws.append(["legend", "N=explicit mismatch, X=ambiguous (input X), x=gap/padding"])
+        gws.column_dimensions["A"].width = 28
+        gws.column_dimensions["B"].width = 160
 
     summary = wb.create_sheet(title=safe_sheet_name("summary", used_names))
     summary.append(
@@ -1313,6 +1408,7 @@ def write_xlsx(
             ("output_fasta", run_metadata.output_fasta),
             ("exon_reference_fasta", run_metadata.exon_reference_fasta),
             ("compare_pairs", run_metadata.compare_pairs),
+            ("compare_groups", run_metadata.compare_groups),
             ("family_mappings", run_metadata.family_mappings),
             ("python_version", run_metadata.python_version),
             ("platform", run_metadata.platform),
@@ -1339,6 +1435,7 @@ def write_consensus_fasta(
     results: List[ExonResult],
     out_path: Path,
     pair_results: Optional[List[PairConsensusResult]] = None,
+    group_results: Optional[List[GroupConsensusResult]] = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
@@ -1349,6 +1446,10 @@ def write_consensus_fasta(
         for pr in pair_results or []:
             handle.write(f">{pr.gene_a}_vs_{pr.gene_b}|isotype_pair_consensus\n")
             for line in wrap_sequence(pr.consensus, width=80):
+                handle.write(line + "\n")
+        for gr in group_results or []:
+            handle.write(f">{gr.group_name}|isotype_group_consensus\n")
+            for line in wrap_sequence(gr.consensus, width=80):
                 handle.write(line + "\n")
 
 
@@ -1385,6 +1486,12 @@ def parse_args() -> argparse.Namespace:
         help="Explicit pair comparison for isotype pages/FASTA (repeatable): GENE_A,GENE_B. "
         "Default includes TRGC1,TRGC2 and TRBC1,TRBC2.",
     )
+    parser.add_argument(
+        "--compare-group",
+        action="append",
+        default=[],
+        help="Explicit multi-gene group comparison (repeatable): NAME=GENE1,GENE2,...",
+    )
     parser.add_argument("--gene", action="append", default=[], help="Restrict to one or more base genes (repeatable)")
     parser.add_argument("--exon", action="append", default=[], help="Restrict to one or more exon labels (repeatable)")
     return parser.parse_args()
@@ -1399,6 +1506,9 @@ def main() -> None:
         out_xlsx = (Path.cwd() / f"{args.output_name}.xlsx").resolve()
     family_mappings = parse_family_mappings(args.family)
     compare_pairs = parse_compare_pairs(args.compare_pair or ["TRGC1,TRGC2", "TRBC1,TRBC2"])
+    compare_groups = parse_compare_groups(args.compare_group)
+    if not compare_groups:
+        compare_groups = infer_auto_compare_groups(compare_pairs)
 
     annotations: List[JunctionAnnotation] = []
     if inp.suffix.lower() == ".csv":
@@ -1442,6 +1552,7 @@ def main() -> None:
         output_fasta=out_fasta,
         exon_reference_fasta=used_exon_ref,
         compare_pairs=compare_pairs,
+        compare_groups=compare_groups,
         family_mappings=family_mappings,
     )
     run_metadata = capture_run_metadata(
@@ -1451,6 +1562,7 @@ def main() -> None:
         exon_reference_fasta=used_exon_ref,
         cli_call_effective=cli_call_effective,
         compare_pairs=compare_pairs,
+        compare_groups=compare_groups,
         family_mappings=family_mappings,
     )
     gene_summaries = build_gene_consensus_summaries(results, annotations=annotations, family_mappings=family_mappings)
@@ -1461,10 +1573,12 @@ def main() -> None:
         annotations=annotations,
         family_mappings=family_mappings,
         compare_pairs=compare_pairs,
+        compare_groups=compare_groups,
         run_metadata=run_metadata,
     )
     print(f"Wrote XLSX: {out_xlsx}")
-    write_consensus_fasta(results, out_fasta, pair_results=pair_results)
+    group_results = build_group_consensus_results(gene_summaries, compare_groups)
+    write_consensus_fasta(results, out_fasta, pair_results=pair_results, group_results=group_results)
     print(f"Wrote consensus FASTA: {out_fasta}")
 
 
