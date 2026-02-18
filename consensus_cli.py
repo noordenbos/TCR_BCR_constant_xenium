@@ -92,6 +92,8 @@ class RunMetadata:
     platform: str
     git_commit: str
     git_branch: str
+    git_remote_origin: str
+    git_remotes: str
     exon_reference_fasta: str
     compare_pairs: str
     family_mappings: str
@@ -1064,6 +1066,8 @@ def capture_run_metadata(
 
     git_commit = run_git(["git", "rev-parse", "HEAD"])
     git_branch = run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    git_remote_origin = run_git(["git", "remote", "get-url", "origin"])
+    git_remotes = run_git(["git", "remote", "-v"])
     cli_call = " ".join(shlex.quote(a) for a in sys.argv)
 
     return RunMetadata(
@@ -1078,6 +1082,8 @@ def capture_run_metadata(
         platform=f"{platform.system()} {platform.release()} ({platform.machine()})",
         git_commit=git_commit,
         git_branch=git_branch,
+        git_remote_origin=git_remote_origin,
+        git_remotes=git_remotes.replace("\n", " ; "),
         exon_reference_fasta=str(exon_reference_fasta) if exon_reference_fasta else "",
         compare_pairs=";".join(f"{a},{b}" for a, b in compare_pairs),
         family_mappings=json.dumps({k: sorted(v) for k, v in sorted(family_mappings.items())}, sort_keys=True),
@@ -1276,6 +1282,8 @@ def write_xlsx(
             ("platform", run_metadata.platform),
             ("git_commit", run_metadata.git_commit),
             ("git_branch", run_metadata.git_branch),
+            ("git_remote_origin", run_metadata.git_remote_origin),
+            ("git_remotes", run_metadata.git_remotes),
         ]
         for k, v in rows:
             rws.append([k, v])
