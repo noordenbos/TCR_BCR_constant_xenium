@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import platform
 import re
@@ -85,12 +86,15 @@ class RunMetadata:
     output_fasta: str
     cwd: str
     cli_call: str
+    cli_call_effective: str
     timestamp_utc: str
     python_version: str
     platform: str
     git_commit: str
     git_branch: str
     exon_reference_fasta: str
+    compare_pairs: str
+    family_mappings: str
 
 
 def parse_gene_name(name: str) -> str:
@@ -1016,11 +1020,40 @@ def parse_family_mappings(family_args: Sequence[str]) -> Dict[str, set[str]]:
     return mappings
 
 
+def build_effective_cli_call(
+    input_path: Path,
+    output_xlsx: Path,
+    output_fasta: Path,
+    exon_reference_fasta: Optional[Path],
+    compare_pairs: Sequence[Tuple[str, str]],
+    family_mappings: Dict[str, set[str]],
+) -> str:
+    parts: List[str] = [
+        "consensus_cli.py",
+        "--input",
+        str(input_path),
+        "--output",
+        str(output_xlsx),
+        "--consensus-fasta-output",
+        str(output_fasta),
+    ]
+    if exon_reference_fasta:
+        parts.extend(["--exon-reference-fasta", str(exon_reference_fasta)])
+    for fam, members in sorted(family_mappings.items()):
+        parts.extend(["--family", f"{fam}={','.join(sorted(members))}"])
+    for a, b in compare_pairs:
+        parts.extend(["--compare-pair", f"{a},{b}"])
+    return " ".join(shlex.quote(p) for p in parts)
+
+
 def capture_run_metadata(
     input_path: Path,
     output_xlsx: Path,
     output_fasta: Path,
     exon_reference_fasta: Optional[Path],
+    cli_call_effective: str,
+    compare_pairs: Sequence[Tuple[str, str]],
+    family_mappings: Dict[str, set[str]],
 ) -> RunMetadata:
     def run_git(args: List[str]) -> str:
         try:
@@ -1039,12 +1072,15 @@ def capture_run_metadata(
         output_fasta=str(output_fasta),
         cwd=os.getcwd(),
         cli_call=cli_call,
+        cli_call_effective=cli_call_effective,
         timestamp_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         python_version=sys.version.replace("\n", " "),
         platform=f"{platform.system()} {platform.release()} ({platform.machine()})",
         git_commit=git_commit,
         git_branch=git_branch,
         exon_reference_fasta=str(exon_reference_fasta) if exon_reference_fasta else "",
+        compare_pairs=";".join(f"{a},{b}" for a, b in compare_pairs),
+        family_mappings=json.dumps({k: sorted(v) for k, v in sorted(family_mappings.items())}, sort_keys=True),
     )
 
 
@@ -1227,12 +1263,15 @@ def write_xlsx(
         rws.append(["field", "value"])
         rows = [
             ("timestamp_utc", run_metadata.timestamp_utc),
-            ("cli_call", run_metadata.cli_call),
+            ("cli_call_raw", run_metadata.cli_call),
+            ("cli_call_effective", run_metadata.cli_call_effective),
             ("cwd", run_metadata.cwd),
             ("input_path", run_metadata.input_path),
             ("output_xlsx", run_metadata.output_xlsx),
             ("output_fasta", run_metadata.output_fasta),
             ("exon_reference_fasta", run_metadata.exon_reference_fasta),
+            ("compare_pairs", run_metadata.compare_pairs),
+            ("family_mappings", run_metadata.family_mappings),
             ("python_version", run_metadata.python_version),
             ("platform", run_metadata.platform),
             ("git_commit", run_metadata.git_commit),
@@ -1345,11 +1384,22 @@ def main() -> None:
         out_fasta = Path(args.consensus_fasta_output).expanduser().resolve()
     else:
         out_fasta = out_xlsx.with_name(f"{out_xlsx.stem}_consensus.fasta")
+    cli_call_effective = build_effective_cli_call(
+        input_path=inp,
+        output_xlsx=out_xlsx,
+        output_fasta=out_fasta,
+        exon_reference_fasta=used_exon_ref,
+        compare_pairs=compare_pairs,
+        family_mappings=family_mappings,
+    )
     run_metadata = capture_run_metadata(
         input_path=inp,
         output_xlsx=out_xlsx,
         output_fasta=out_fasta,
         exon_reference_fasta=used_exon_ref,
+        cli_call_effective=cli_call_effective,
+        compare_pairs=compare_pairs,
+        family_mappings=family_mappings,
     )
     gene_summaries = build_gene_consensus_summaries(results, annotations=annotations, family_mappings=family_mappings)
     pair_results = build_pair_consensus_results(gene_summaries, compare_pairs)
