@@ -1140,6 +1140,8 @@ def write_xlsx(
                 gs.consensus,
             ]
         )
+    gsummary.append(["", ""])
+    gsummary.append(["Legend", "X=polymorphism, x=padding"])
     gsummary.column_dimensions["A"].width = 14
     gsummary.column_dimensions["B"].width = 14
     gsummary.column_dimensions["C"].width = 28
@@ -1193,7 +1195,6 @@ def write_xlsx(
                 res.consensus,
             ]
         )
-
         ws_name = safe_sheet_name(f"{res.gene}_{res.exon}", used_names)
         ws = wb.create_sheet(title=ws_name)
 
@@ -1204,6 +1205,9 @@ def write_xlsx(
 
         ws.cell(row=row, column=2, value="consensus_fasta").font = bold
         ws.cell(row=row, column=3, value=res.consensus)
+        row += 1
+        ws.cell(row=row, column=1, value="Legend").font = bold
+        ws.cell(row=row, column=2, value="X=polymorphism, x=padding")
         row += 2
 
         ws.cell(row=row, column=1, value="isotype").font = bold
@@ -1220,6 +1224,9 @@ def write_xlsx(
         ws.column_dimensions["A"].width = 24
         ws.column_dimensions["B"].width = 24
         ws.column_dimensions["C"].width = 140
+
+    summary.append(["", ""])
+    summary.append(["Legend", "X=polymorphism, x=padding"])
 
     summary.column_dimensions["A"].width = 14
     summary.column_dimensions["B"].width = 14
