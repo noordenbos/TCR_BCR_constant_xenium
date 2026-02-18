@@ -55,6 +55,13 @@ python consensus_cli.py \
   --output '/Users/troynoordenbos/code/xenium_fasta_BCR_TCR/consensus_regions_compiled.xlsx'
 ```
 
+You can also name outputs without a full path:
+```bash
+python consensus_cli.py \
+  --input '/Users/troynoordenbos/code/xenium_fasta_BCR_TCR/input_data/BCR_compiled_fasta.csv' \
+  --output-name 'consensus_regions_bcr_compiled'
+```
+
 Optional: restrict to specific genes/exons
 ```bash
 python consensus_cli.py \

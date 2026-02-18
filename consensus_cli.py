@@ -220,6 +220,19 @@ def merge_variant_consensus(seqs: Sequence[str]) -> str:
     return "".join(out)
 
 
+def filter_short_length_outliers(subtypes: Dict[str, str]) -> Dict[str, str]:
+    if len(subtypes) < 3:
+        return subtypes
+    lengths = sorted(len(v) for v in subtypes.values())
+    median = lengths[len(lengths) // 2]
+    min_len = max(1, int(round(median * 0.7)))
+    kept = {k: v for k, v in subtypes.items() if len(v) >= min_len}
+    # Keep at least 2 alleles; otherwise do not filter.
+    if len(kept) < 2:
+        return subtypes
+    return kept
+
+
 def infer_segments_from_exon_lookup(
     allele: str,
     seq: str,
@@ -727,7 +740,8 @@ def relation_to_consensus(consensus: str, subtype_row: str) -> Tuple[str, int]:
 
 
 def analyze_exon(gene: str, exon: str, subtypes: Dict[str, str]) -> ExonResult:
-    aligned = build_alignment(subtypes)
+    filtered = filter_short_length_outliers(subtypes)
+    aligned = build_alignment(filtered)
     names = sorted(aligned.keys())
     rows = [aligned[n] for n in names]
     consensus, shared_start, shared_end = build_masked_consensus(rows)
@@ -775,10 +789,17 @@ def build_gene_consensus_summaries(
         by_gene[res.gene][res.exon] = res
 
     c_region_genes: set[str] = set()
+    preferred_order_by_gene: Dict[str, List[str]] = {}
     if annotations:
         c_region_genes = {
             ann.base_gene for ann in annotations if ann.original_region and ann.original_region.strip().upper() == "C-REGION"
         }
+        for ann in annotations:
+            if ann.base_gene in preferred_order_by_gene:
+                continue
+            chain = [x for x in (ann.exon_chain or "").split("+") if x]
+            if len(chain) >= 2:
+                preferred_order_by_gene[ann.base_gene] = chain
 
     out: List[GeneConsensusSummary] = []
     for gene in sorted(by_gene.keys()):
@@ -827,7 +848,15 @@ def build_gene_consensus_summaries(
             )
             continue
 
-        ordered = sort_exon_labels(exon_map.keys())
+        labels = list(exon_map.keys())
+        if "C-REGION" in labels and len(labels) > 1:
+            labels = [lbl for lbl in labels if lbl != "C-REGION"]
+
+        preferred = preferred_order_by_gene.get(gene, [])
+        ordered = [lbl for lbl in preferred if lbl in labels]
+        remaining = [lbl for lbl in labels if lbl not in ordered]
+        ordered.extend(sorted(remaining))
+
         parts = [exon_map[lbl].consensus for lbl in ordered]
         seq = "".join(parts)
         pos = 1
@@ -1326,7 +1355,12 @@ def write_consensus_fasta(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compute per-gene, per-exon consensus from IMGT FASTA or compiled CSV.")
     parser.add_argument("--input", required=True, help="Input IMGT FASTA or compiled CSV path")
-    parser.add_argument("--output", required=True, help="Output XLSX path")
+    parser.add_argument("--output", default="", help="Output XLSX path (overrides --output-name)")
+    parser.add_argument(
+        "--output-name",
+        default="consensus_regions",
+        help="Base name for outputs when --output is not provided (creates <name>.xlsx and <name>_consensus.fasta).",
+    )
     parser.add_argument(
         "--exon-reference-fasta",
         default="",
@@ -1359,7 +1393,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     inp = Path(args.input).expanduser().resolve()
-    out_xlsx = Path(args.output).expanduser().resolve()
+    if args.output:
+        out_xlsx = Path(args.output).expanduser().resolve()
+    else:
+        out_xlsx = (Path.cwd() / f"{args.output_name}.xlsx").resolve()
     family_mappings = parse_family_mappings(args.family)
     compare_pairs = parse_compare_pairs(args.compare_pair or ["TRGC1,TRGC2", "TRBC1,TRBC2"])
 
